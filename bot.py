@@ -9,10 +9,11 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 import httpx
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-BOT_TOKEN     = os.environ["BOT_TOKEN"]
-NOTION_TOKEN  = os.environ["NOTION_TOKEN"]
-DATABASE_ID   = os.environ["DATABASE_ID"]
-ALLOWED_USER  = os.environ.get("ALLOWED_USER", "")   # your Telegram username, e.g. "anastasia"
+BOT_TOKEN       = os.environ["BOT_TOKEN"]
+NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
+DATABASE_ID     = os.environ["DATABASE_ID"]
+ANTHROPIC_TOKEN = os.environ["ANTHROPIC_TOKEN"]
+ALLOWED_USER    = os.environ.get("ALLOWED_USER", "")
 
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -33,6 +34,46 @@ logger = logging.getLogger(__name__)
 def clean_category(cat: str) -> str:
     """Strip emoji prefix from category button label."""
     return re.sub(r"^[\U00010000-\U0010ffff\u2600-\u26FF\u2700-\u27BF\s]+", "", cat).strip()
+
+CATEGORY_NAMES = [
+    "Їжа", "Транспорт", "Житло", "Здоровʼя",
+    "Одяг", "Краса", "Тварини", "Навчання",
+    "Розваги", "Подорожі", "Інше",
+]
+
+async def ai_categorize(description: str) -> str | None:
+    """Ask Claude to pick a category for the expense description."""
+    prompt = (
+        f"Визнач категорію витрати за описом: «{description}»\n\n"
+        f"Доступні категорії: {', '.join(CATEGORY_NAMES)}\n\n"
+        f"Відповідай ТІЛЬКИ назвою категорії, без пояснень."
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_TOKEN,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 20,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            r.raise_for_status()
+            result = r.json()["content"][0]["text"].strip()
+            if result in CATEGORY_NAMES:
+                return result
+            for cat in CATEGORY_NAMES:
+                if cat.lower() in result.lower():
+                    return cat
+            return None
+    except Exception as e:
+        logger.error(f"AI categorization error: {e}")
+        return None
 
 async def add_to_notion(amount: float, category: str, note: str = ""):
     now = datetime.now(timezone.utc).isoformat()
@@ -182,6 +223,27 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if match:
         amount = float(match.group(1).replace(",", "."))
         note   = (match.group(2) or "").strip()
+
+        # якщо є опис — пробуємо автоматично визначити категорію через Claude
+        if note:
+            await update.message.reply_text("🤔 Визначаю категорію...", parse_mode="Markdown")
+            category = await ai_categorize(note)
+            if category:
+                try:
+                    await add_to_notion(amount, category, note)
+                    await update.message.reply_text(
+                        f"✅ Записано!\n\n"
+                        f"💸 *{amount:,.0f} zł* — {note}\n"
+                        f"🏷 Категорія: *{category}*",
+                        parse_mode="Markdown",
+                        reply_markup=main_keyboard(),
+                    )
+                except Exception as e:
+                    logger.error(e)
+                    await update.message.reply_text("❌ Помилка запису в Notion. Спробуй ще раз.")
+                return
+
+        # якщо немає опису або AI не впорався — показуємо кнопки
         pending[user_id] = {"amount": amount, "note": note}
         await update.message.reply_text(
             f"Сума: *{amount:,.0f} zł*{' | ' + note if note else ''}\nОбери категорію:",
