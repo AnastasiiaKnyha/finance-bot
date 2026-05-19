@@ -13,7 +13,7 @@ BOT_TOKEN       = os.environ["BOT_TOKEN"]
 NOTION_TOKEN    = os.environ["NOTION_TOKEN"]
 DATABASE_ID     = os.environ["DATABASE_ID"]
 ANTHROPIC_TOKEN = os.environ["ANTHROPIC_TOKEN"]
-ALLOWED_USER    = os.environ.get("ALLOWED_USER", "")
+ALLOWED_USERS = set(u.strip() for u in os.environ.get("ALLOWED_USERS", "").split(",") if u.strip())
 
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -163,9 +163,9 @@ def main_keyboard():
 
 # ─── GUARDS ───────────────────────────────────────────────────────────────────
 def is_allowed(update: Update) -> bool:
-    if not ALLOWED_USER:
+    if not ALLOWED_USERS:
         return True
-    return update.effective_user.username == ALLOWED_USER
+    return update.effective_user.username in ALLOWED_USERS
 
 # ─── HANDLERS ─────────────────────────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
